@@ -20,13 +20,4 @@ module "keda" {
   depends_on = [module.kong]
 }
 
-module "oneuptime" {
-  source = "./modules/oneuptime"
-  depends_on = [module.keda]
-}
-
-module "ingress" {
-  source = "./modules/ingress"
-  depends_on = [module.oneuptime]
-}
 
