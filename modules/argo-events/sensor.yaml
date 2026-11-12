@@ -1,0 +1,98 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: oneuptime-sensor
+  namespace: argo-events
+
+spec:
+  eventBusName: default
+
+  template:
+    serviceAccountName: oneuptime-sensor-sa
+
+  dependencies:
+    - name: oneuptime-event
+      eventSourceName: oneuptime-webhook
+      eventName: oneuptime
+
+  triggers:
+    - template:
+        name: incident-handler
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: oneuptime-incident-
+                namespace: argo-events
+              spec:
+                ttlSecondsAfterFinished: 600
+                backoffLimit: 2
+                template:
+                  spec:
+                    restartPolicy: Never
+                    containers:
+                      - name: handler
+                        image: curlimages/curl:8.12.1
+                        env:
+                          - name: MULTISEND_USERNAME
+                            value: "admin"
+                          - name: MULTISEND_PASSWORD
+                            valueFrom:
+                              secretKeyRef:
+                                name: multisend-credentials
+                                key: password
+                        command:
+                          - sh
+                          - -c
+                        args:
+                          - |
+                            set -eu
+
+                            echo "OneUptime webhook received"
+                            echo "Sending incident SMS..."
+
+                            PAYLOAD=$(cat <<EOF
+                            {
+                              "User": {
+                                "Username": "${MULTISEND_USERNAME}",
+                                "Password": "${MULTISEND_PASSWORD}"
+                              },
+                              "send": [
+                                {
+                                  "Content": {
+                                    "Message": "Service is offline, IncidentCreated",
+                                    "Type": "sms"
+                                  },
+                                  "Recipients": [
+                                    "0542047155",
+                                    "0523650000"
+                                  ],
+                                  "Settings": {
+                                    "Sender": "OneUptime"
+                                  }
+                                }
+                              ]
+                            }
+                            EOF
+                            )
+
+                            RESPONSE=$(curl --silent --show-error \
+                              --fail-with-body \
+                              --location \
+                              --retry 3 \
+                              --retry-delay 2 \
+                              'https://api.multisend.co.il/v2/sendjson' \
+                              --header 'Content-Type: application/json' \
+                              --data "$PAYLOAD")
+
+                            echo "Multisend response: $RESPONSE"
+
+                            if echo "$RESPONSE" | grep -Eq '"success"[[:space:]]*:[[:space:]]*true'; then
+                              echo "SMS successfully accepted"
+                            else
+                              echo "ERROR: SMS rejected"
+                              exit 1
+                            fi
